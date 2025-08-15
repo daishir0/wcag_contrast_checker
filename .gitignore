@@ -13,3 +13,5 @@ venv/
 
 # その他
 .DS_Store
+
+doc/
