@@ -30,7 +30,6 @@ import base64
 import os
 import tempfile
 import shutil
-import anthropic
 import re
 import math
 from io import BytesIO
@@ -44,7 +43,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from config import ANTHROPIC_API_KEY, CHROME_BINARY_PATH, CHROME_DRIVER_PATH, DEBUG
+from config import CHROME_BINARY_PATH, CHROME_DRIVER_PATH, DEBUG
 
 def setup_driver():
     """

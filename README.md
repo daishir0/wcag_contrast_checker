@@ -21,7 +21,6 @@ WCAG Contrast Checker is a tool that evaluates web pages for compliance with WCA
 
 5. Create a `config.py` file with the following content:
    ```python
-   ANTHROPIC_API_KEY = "your_anthropic_api_key"  # Optional for basic functionality
    CHROME_BINARY_PATH = "/path/to/chrome"  # e.g., "/usr/bin/google-chrome"
    CHROME_DRIVER_PATH = "/path/to/chromedriver"  # e.g., "/usr/local/bin/chromedriver"
    DEBUG = False  # Set to True for verbose output
@@ -103,7 +102,7 @@ The tool provides detailed console output including:
 ## Notes
 - The tool runs in headless mode for server environments
 - Temporary Chrome data directories are automatically cleaned up
-- The Anthropic API key is optional for basic contrast ratio calculations
+- No external APIs required - performs mathematical contrast ratio calculations
 - Processing time depends on the number of text elements on the page
 - Ensure ChromeDriver version matches your Chrome browser version
 
@@ -135,7 +134,6 @@ WCAG コントラスト比チェッカーは、ウェブページがWCAG 1.4.3�
 
 5. 以下の内容で`config.py`ファイルを作成します：
    ```python
-   ANTHROPIC_API_KEY = "あなたのAnthropic APIキー"  # 基本機能には不要
    CHROME_BINARY_PATH = "/Chromeへのパス"  # 例："/usr/bin/google-chrome"
    CHROME_DRIVER_PATH = "/ChromeDriverへのパス"  # 例："/usr/local/bin/chromedriver"
    DEBUG = False  # 詳細な出力が必要な場合はTrueに設定
@@ -217,7 +215,7 @@ python wcag_contrast_checker.py https://example.com
 ## 注意点
 - ツールはサーバー環境向けにヘッドレスモードで実行されます
 - Chrome一時データディレクトリは自動的にクリーンアップされます
-- Anthropic APIキーは基本的なコントラスト比計算には不要です
+- 外部APIは不要で、純粋な数学計算でコントラスト比を算出します
 - 処理時間はページ上のテキスト要素数に依存します
 - ChromeDriverのバージョンがお使いのChromeブラウザのバージョンと一致していることを確認してください
 
