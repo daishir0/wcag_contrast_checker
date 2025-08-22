@@ -32,6 +32,7 @@ import tempfile
 import shutil
 import re
 import math
+import numpy as np
 from io import BytesIO
 from PIL import Image
 from bs4 import BeautifulSoup
@@ -257,6 +258,121 @@ def rgb_to_luminance(rgb_str):
     luminance = 0.2126 * r_linear + 0.7152 * g_linear + 0.0722 * b_linear
     return luminance
 
+def srgb_to_linear(color_value):
+    """
+    Convert sRGB color value to linear RGB
+    """
+    color_value = color_value / 255.0
+    if color_value <= 0.03928:
+        return color_value / 12.92
+    else:
+        return math.pow((color_value + 0.055) / 1.055, 2.4)
+
+def linear_rgb_to_luminance(r_linear, g_linear, b_linear):
+    """
+    Convert linear RGB to relative luminance
+    """
+    return 0.2126 * r_linear + 0.7152 * g_linear + 0.0722 * b_linear
+
+def capture_element_screenshot(driver, element):
+    """
+    Capture screenshot of a specific element
+    """
+    try:
+        # Scroll element into view
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", element)
+        time.sleep(1)
+        
+        # Get element screenshot as PNG bytes
+        element_png = element.screenshot_as_png
+        
+        # Convert to PIL Image
+        image = Image.open(BytesIO(element_png))
+        return image
+    except Exception as e:
+        if DEBUG:
+            print(f"要素のスクリーンショット取得エラー: {e}")
+        return None
+
+def calculate_true_background_luminance(image, text_color_rgb):
+    """
+    Calculate true background luminance using the low-computation algorithm
+    
+    Args:
+        image: PIL Image of the element
+        text_color_rgb: Text color as (r, g, b) tuple
+    
+    Returns:
+        tuple: (true_background_luminance, true_background_rgb)
+    """
+    if image is None:
+        return None, None
+    
+    try:
+        # Convert image to RGB if needed
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Convert to numpy array
+        img_array = np.array(image)
+        height, width, channels = img_array.shape
+        
+        # Convert text color to linear RGB
+        text_r_linear = srgb_to_linear(text_color_rgb[0])
+        text_g_linear = srgb_to_linear(text_color_rgb[1])
+        text_b_linear = srgb_to_linear(text_color_rgb[2])
+        text_luminance = linear_rgb_to_luminance(text_r_linear, text_g_linear, text_b_linear)
+        
+        # Flatten image array for processing
+        pixels = img_array.reshape(-1, 3)
+        
+        # Calculate color distance threshold (approximate anti-aliasing tolerance)
+        threshold = 30  # 8-bit equivalent of ~0.12 in linear space
+        
+        # Filter out text-like pixels using Euclidean distance in sRGB space
+        text_color = np.array(text_color_rgb)
+        distances = np.linalg.norm(pixels - text_color, axis=1)
+        background_pixels = pixels[distances > threshold]
+        
+        if len(background_pixels) == 0:
+            # Fallback: use all pixels if no background found
+            background_pixels = pixels
+        
+        # Convert background pixels to linear RGB and then to luminance
+        bg_linear = np.zeros_like(background_pixels, dtype=float)
+        for i in range(3):
+            bg_linear[:, i] = [srgb_to_linear(p) for p in background_pixels[:, i]]
+        
+        # Calculate luminance for each background pixel
+        bg_luminances = np.array([
+            linear_rgb_to_luminance(pixel[0], pixel[1], pixel[2]) 
+            for pixel in bg_linear
+        ])
+        
+        # Determine if text is dark or light compared to average background
+        avg_bg_luminance = np.mean(bg_luminances)
+        is_dark_text = text_luminance < avg_bg_luminance
+        
+        # Choose appropriate percentile for worst-case scenario
+        if is_dark_text:
+            # Dark text: worst case is darker background (lower percentile)
+            true_bg_luminance = np.percentile(bg_luminances, 5)
+            percentile_idx = np.argmin(np.abs(bg_luminances - true_bg_luminance))
+        else:
+            # Light text: worst case is lighter background (upper percentile)
+            true_bg_luminance = np.percentile(bg_luminances, 95)
+            percentile_idx = np.argmin(np.abs(bg_luminances - true_bg_luminance))
+        
+        # Get the corresponding RGB value
+        true_bg_rgb = tuple(int(x) for x in background_pixels[percentile_idx])
+        
+        return true_bg_luminance, true_bg_rgb
+        
+    except Exception as e:
+        if DEBUG:
+            print(f"真背景色計算エラー: {e}")
+        return None, None
+
 def calculate_contrast_ratio(foreground_color, background_color):
     """
     Calculate contrast ratio between foreground and background colors
@@ -267,6 +383,22 @@ def calculate_contrast_ratio(foreground_color, background_color):
     # Ensure L1 is the lighter color
     l1 = max(fg_luminance, bg_luminance)
     l2 = min(fg_luminance, bg_luminance)
+    
+    contrast_ratio = (l1 + 0.05) / (l2 + 0.05)
+    return contrast_ratio
+
+def calculate_improved_contrast_ratio(foreground_color, true_bg_luminance):
+    """
+    Calculate contrast ratio using true background luminance
+    """
+    if true_bg_luminance is None:
+        return None
+    
+    fg_luminance = rgb_to_luminance(foreground_color)
+    
+    # Ensure L1 is the lighter color
+    l1 = max(fg_luminance, true_bg_luminance)
+    l2 = min(fg_luminance, true_bg_luminance)
     
     contrast_ratio = (l1 + 0.05) / (l2 + 0.05)
     return contrast_ratio
@@ -352,11 +484,47 @@ def check_contrast_ratio(url):
         for i, element in enumerate(text_elements):
             print(f"要素を処理中 {i+1}/{len(text_elements)}: {element['text'][:50]}...")
             
-            # Calculate contrast ratio
+            # Calculate original contrast ratio
             contrast_ratio = calculate_contrast_ratio(element['color'], element['backgroundColor'])
             
-            # Determine WCAG compliance
-            compliance = determine_wcag_compliance(element, contrast_ratio)
+            # Try to get the actual DOM element for screenshot analysis
+            true_bg_luminance = None
+            true_bg_rgb = None
+            improved_contrast_ratio = None
+            
+            try:
+                # Find the element using XPath
+                dom_element = driver.find_element(By.XPATH, element['xpath'])
+                
+                # Capture element screenshot
+                element_image = capture_element_screenshot(driver, dom_element)
+                
+                if element_image:
+                    # Parse text color
+                    rgb_match = re.match(r'rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)', element['color'])
+                    if rgb_match:
+                        text_rgb = (int(rgb_match.group(1)), int(rgb_match.group(2)), int(rgb_match.group(3)))
+                        
+                        # Calculate true background luminance
+                        true_bg_luminance, true_bg_rgb = calculate_true_background_luminance(element_image, text_rgb)
+                        
+                        if true_bg_luminance is not None:
+                            # Calculate improved contrast ratio
+                            improved_contrast_ratio = calculate_improved_contrast_ratio(element['color'], true_bg_luminance)
+                            
+                            if DEBUG:
+                                print(f"  真背景色: rgb{true_bg_rgb}, 輝度: {true_bg_luminance:.4f}")
+                                print(f"  改善されたコントラスト比: {improved_contrast_ratio:.2f}:1")
+                    
+            except Exception as e:
+                if DEBUG:
+                    print(f"  要素の詳細解析をスキップ: {e}")
+            
+            # Use improved contrast ratio if available, otherwise use original
+            final_contrast_ratio = improved_contrast_ratio if improved_contrast_ratio is not None else contrast_ratio
+            
+            # Determine WCAG compliance using final contrast ratio
+            compliance = determine_wcag_compliance(element, final_contrast_ratio)
             
             # Create result object
             result = {
@@ -373,12 +541,16 @@ def check_contrast_ratio(url):
                 'backgroundColor': element['backgroundColor'],
                 'language': element['language'],
                 'contrast_ratio': round(contrast_ratio, 2),
+                'improved_contrast_ratio': round(improved_contrast_ratio, 2) if improved_contrast_ratio is not None else None,
+                'true_background_luminance': round(true_bg_luminance, 4) if true_bg_luminance is not None else None,
+                'true_background_rgb': true_bg_rgb,
+                'final_contrast_ratio': round(final_contrast_ratio, 2),
                 'compliance': compliance
             }
             
             results.append(result)
         
-        # Create final report
+        # Create final report (use final_contrast_ratio for compliance determination)
         compliant_elements = [r for r in results if r['compliance']['is_compliant']]
         non_compliant_elements = [r for r in results if not r['compliance']['is_compliant']]
         
@@ -434,7 +606,23 @@ def main():
                 print(f"  言語: {element['language']}")
                 print(f"  前景色: {element['color']}")
                 print(f"  背景色: {element['backgroundColor']}")
-                print(f"  コントラスト比: {element['contrast_ratio']}:1")
+                
+                # Add true background color if available
+                if element.get('true_background_rgb'):
+                    true_bg_rgb = element['true_background_rgb']
+                    print(f"  真背景色: rgb({true_bg_rgb[0]}, {true_bg_rgb[1]}, {true_bg_rgb[2]}) (輝度: {element['true_background_luminance']:.4f})")
+                else:
+                    print(f"  真背景色: 解析不可")
+                
+                print(f"  コントラスト比 (通常): {element['contrast_ratio']}:1")
+                
+                # Show improved contrast ratio if available
+                if element.get('improved_contrast_ratio'):
+                    print(f"  コントラスト比 (改善): {element['improved_contrast_ratio']}:1")
+                    print(f"  最終コントラスト比: {element['final_contrast_ratio']}:1 (改善後)")
+                else:
+                    print(f"  最終コントラスト比: {element['final_contrast_ratio']}:1 (通常)")
+                
                 print(f"  必要なコントラスト比: {element['compliance']['required_ratio']}:1 (状況{element['compliance']['situation']})")
                 print(f"  大きなテキスト: {'はい' if element['compliance']['is_large_text'] else 'いいえ'}")
                 print(f"  推奨事項: コントラスト比を{element['compliance']['required_ratio']}:1以上に改善してください")
@@ -458,6 +646,15 @@ def main():
             en_elements = len([e for e in results['compliant_list'] + results['non_compliant_list'] if e['language'] == 'en'])
             print(f"日本語要素: {ja_elements}個")
             print(f"英語要素: {en_elements}個")
+            
+            # True background analysis statistics
+            analyzed_elements = len([e for e in results['compliant_list'] + results['non_compliant_list'] if e.get('true_background_rgb')])
+            print(f"真背景色解析成功: {analyzed_elements}個/{results['total_text_elements']}個")
+            
+            # Show improvement statistics for non-compliant elements
+            improved_elements = len([e for e in results['non_compliant_list'] if e.get('improved_contrast_ratio') and e['improved_contrast_ratio'] != e['contrast_ratio']])
+            if improved_elements > 0:
+                print(f"改善されたコントラスト比を持つ要素: {improved_elements}個")
         
     except Exception as e:
         print(f"エラー: {e}")
