@@ -44,6 +44,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from sklearn.cluster import KMeans
 from config import CHROME_BINARY_PATH, CHROME_DRIVER_PATH, DEBUG
 
 def setup_driver():
@@ -294,9 +295,25 @@ def capture_element_screenshot(driver, element):
             print(f"要素のスクリーンショット取得エラー: {e}")
         return None
 
+def create_enhanced_text_mask(image_array, text_color_rgb, threshold=50):
+    """
+    Create enhanced text mask to exclude text pixels
+    
+    Args:
+        image_array: numpy array of the image
+        text_color_rgb: Text color as (r, g, b) tuple
+        threshold: Distance threshold for text detection
+    
+    Returns:
+        boolean mask where True = text pixels
+    """
+    text_color = np.array(text_color_rgb)
+    distances = np.linalg.norm(image_array - text_color, axis=2)
+    return distances <= threshold
+
 def calculate_true_background_luminance(image, text_color_rgb):
     """
-    Calculate true background luminance using the low-computation algorithm
+    Calculate true background luminance using dominant clustering algorithm
     
     Args:
         image: PIL Image of the element
@@ -314,63 +331,55 @@ def calculate_true_background_luminance(image, text_color_rgb):
             image = image.convert('RGB')
         
         # Convert to numpy array
-        img_array = np.array(image)
-        height, width, channels = img_array.shape
+        image_array = np.array(image)
+        h, w, c = image_array.shape
         
-        # Convert text color to linear RGB
-        text_r_linear = srgb_to_linear(text_color_rgb[0])
-        text_g_linear = srgb_to_linear(text_color_rgb[1])
-        text_b_linear = srgb_to_linear(text_color_rgb[2])
-        text_luminance = linear_rgb_to_luminance(text_r_linear, text_g_linear, text_b_linear)
+        # Step 1: Remove text pixels using enhanced mask
+        text_mask = create_enhanced_text_mask(image_array, text_color_rgb, threshold=50)
+        background_pixels = image_array[~text_mask].reshape(-1, 3)
         
-        # Flatten image array for processing
-        pixels = img_array.reshape(-1, 3)
+        if len(background_pixels) < 10:
+            # Fallback: use all pixels if insufficient background found
+            background_pixels = image_array.reshape(-1, 3)
         
-        # Calculate color distance threshold (approximate anti-aliasing tolerance)
-        threshold = 30  # 8-bit equivalent of ~0.12 in linear space
+        # Step 2: Apply K-means clustering to group background pixels
+        # Check for unique colors first to avoid convergence warnings
+        unique_colors = np.unique(background_pixels.reshape(-1, background_pixels.shape[-1]), axis=0)
+        n_unique = len(unique_colors)
         
-        # Filter out text-like pixels using Euclidean distance in sRGB space
-        text_color = np.array(text_color_rgb)
-        distances = np.linalg.norm(pixels - text_color, axis=1)
-        background_pixels = pixels[distances > threshold]
-        
-        if len(background_pixels) == 0:
-            # Fallback: use all pixels if no background found
-            background_pixels = pixels
-        
-        # Convert background pixels to linear RGB and then to luminance
-        bg_linear = np.zeros_like(background_pixels, dtype=float)
-        for i in range(3):
-            bg_linear[:, i] = [srgb_to_linear(p) for p in background_pixels[:, i]]
-        
-        # Calculate luminance for each background pixel
-        bg_luminances = np.array([
-            linear_rgb_to_luminance(pixel[0], pixel[1], pixel[2]) 
-            for pixel in bg_linear
-        ])
-        
-        # Determine if text is dark or light compared to average background
-        avg_bg_luminance = np.mean(bg_luminances)
-        is_dark_text = text_luminance < avg_bg_luminance
-        
-        # Choose appropriate percentile for worst-case scenario
-        if is_dark_text:
-            # Dark text: worst case is darker background (lower percentile)
-            true_bg_luminance = np.percentile(bg_luminances, 5)
-            percentile_idx = np.argmin(np.abs(bg_luminances - true_bg_luminance))
+        if n_unique <= 1:
+            # Only one unique color - use it directly
+            dominant_bg_color = unique_colors[0] if n_unique == 1 else np.mean(background_pixels, axis=0)
         else:
-            # Light text: worst case is lighter background (upper percentile)
-            true_bg_luminance = np.percentile(bg_luminances, 95)
-            percentile_idx = np.argmin(np.abs(bg_luminances - true_bg_luminance))
+            # Use clustering with appropriate number of clusters
+            n_clusters = min(4, n_unique, len(background_pixels))
+            
+            # Suppress convergence warnings for single color cases
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning)
+                kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                clusters = kmeans.fit(background_pixels)
+            
+            # Step 3: Find the largest cluster (dominant background)
+            labels_count = np.bincount(clusters.labels_)
+            largest_cluster_idx = np.argmax(labels_count)
+            dominant_bg_color = clusters.cluster_centers_[largest_cluster_idx]
         
-        # Get the corresponding RGB value
-        true_bg_rgb = tuple(int(x) for x in background_pixels[percentile_idx])
+        # Convert to integer RGB tuple
+        true_bg_rgb = tuple(int(x) for x in dominant_bg_color)
+        
+        # Calculate luminance of dominant background color
+        text_r_linear = srgb_to_linear(true_bg_rgb[0])
+        text_g_linear = srgb_to_linear(true_bg_rgb[1])
+        text_b_linear = srgb_to_linear(true_bg_rgb[2])
+        true_bg_luminance = linear_rgb_to_luminance(text_r_linear, text_g_linear, text_b_linear)
         
         return true_bg_luminance, true_bg_rgb
         
     except Exception as e:
         if DEBUG:
-            print(f"真背景色計算エラー: {e}")
+            print(f"真背景色計算エラー (Dominant Clustering): {e}")
         return None, None
 
 def calculate_contrast_ratio(foreground_color, background_color):
