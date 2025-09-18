@@ -32,6 +32,8 @@ import tempfile
 import shutil
 import re
 import math
+import csv
+from urllib.parse import urlparse
 import numpy as np
 from io import BytesIO
 from PIL import Image
@@ -92,10 +94,115 @@ def cleanup_temp_dir(temp_dir):
     except Exception as e:
         print(f"警告: 一時ディレクトリの削除に失敗しました: {e}")
 
+def url_to_filename(url):
+    """
+    Convert URL to a safe filename
+    """
+    parsed = urlparse(url)
+
+    # ドメインを取得
+    domain = parsed.netloc
+
+    # 不要なプレフィックスを除去
+    domain = domain.replace('www.', '')
+
+    # ファイル名に使用できない文字を置換
+    safe_chars = re.sub(r'[^\w\-_.]', '_', domain)
+
+    # 連続するアンダースコアを単一にする
+    safe_chars = re.sub(r'_+', '_', safe_chars)
+
+    # 前後のアンダースコアを除去
+    safe_chars = safe_chars.strip('_')
+
+    return safe_chars
+
+def export_to_csv(results, url):
+    """
+    Export results to CSV file
+    """
+    filename = f"wcag_results_{url_to_filename(url)}.csv"
+
+    # すべての要素（適切 + 不適切）を結合
+    all_elements = []
+
+    # 適切な要素を追加
+    for element in results['compliant_list']:
+        all_elements.append({
+            '判定': '適切',
+            '要素番号': element['index'],
+            'タグ種別': element['tagName'],
+            'テキスト': element['text'],
+            'ID': element['id'] if element['id'] else '',
+            'クラス': element['className'] if element['className'] else '',
+            'XPath': element['xpath'],
+            'フォントサイズ(px)': element['fontSize'],
+            'フォントウェイト': element['fontWeight'],
+            '前景色': element['color'],
+            '背景色': element['backgroundColor'],
+            '真背景色': f"rgb{element['true_background_rgb']}" if element.get('true_background_rgb') else '',
+            'コントラスト比': element['final_contrast_ratio'],
+            '必要コントラスト比': element['compliance']['required_ratio'],
+            '状況': element['compliance']['situation'],
+            '大きなテキスト': '〇' if element['compliance']['is_large_text'] else '×',
+            '言語': element['language']
+        })
+
+    # 不適切な要素を追加
+    for element in results['non_compliant_list']:
+        all_elements.append({
+            '判定': '不適切',
+            '要素番号': element['index'],
+            'タグ種別': element['tagName'],
+            'テキスト': element['text'],
+            'ID': element['id'] if element['id'] else '',
+            'クラス': element['className'] if element['className'] else '',
+            'XPath': element['xpath'],
+            'フォントサイズ(px)': element['fontSize'],
+            'フォントウェイト': element['fontWeight'],
+            '前景色': element['color'],
+            '背景色': element['backgroundColor'],
+            '真背景色': f"rgb{element['true_background_rgb']}" if element.get('true_background_rgb') else '',
+            'コントラスト比': element['final_contrast_ratio'],
+            '必要コントラスト比': element['compliance']['required_ratio'],
+            '状況': element['compliance']['situation'],
+            '大きなテキスト': '〇' if element['compliance']['is_large_text'] else '×',
+            '言語': element['language']
+        })
+
+    # 要素番号でソート
+    all_elements.sort(key=lambda x: x['要素番号'])
+
+    # CSVファイルに書き込み
+    try:
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            if all_elements:
+                fieldnames = all_elements[0].keys()
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+                # ヘッダー行を書き込み
+                writer.writeheader()
+
+                # データ行を書き込み
+                writer.writerows(all_elements)
+
+        print(f"\nCSVファイルを出力しました: {filename}")
+        print(f"出力要素数: {len(all_elements)}個")
+
+    except Exception as e:
+        print(f"CSVファイル出力エラー: {e}")
+
+    return filename
+
 def get_text_elements(driver):
     """
     Get all text elements from the page
     """
+    # Remove cookie banners BEFORE extracting text elements
+    if DEBUG:
+        print("テキスト要素検出前にCookieバナーを除去中...")
+    comprehensive_banner_removal(driver)
+
     # JavaScript to extract text elements with their computed styles
     script = """
     function getTextElements() {
@@ -275,6 +382,262 @@ def linear_rgb_to_luminance(r_linear, g_linear, b_linear):
     """
     return 0.2126 * r_linear + 0.7152 * g_linear + 0.0722 * b_linear
 
+def remove_known_cookie_services(driver):
+    """
+    Remove known cookie consent services
+    """
+    services = {
+        'cookiebot': ['#CybotCookiebotDialog', '.CybotCookiebotDialog'],
+        'onetrust': ['#onetrust-banner-sdk', '.onetrust-pc-dark-filter'],
+        'cookielaw': ['#cookieChoiceInfo', '.cc-banner'],
+        'quantcast': ['.qc-cmp2-container', '.qc-cmp2-footer'],
+        'trustarc': ['#truste-consent-track', '.truste_popframe'],
+        'iubenda': ['.iubenda-cs-overlay', '.iubenda-banner']
+    }
+
+    removed_total = 0
+    for service, selectors in services.items():
+        for selector in selectors:
+            try:
+                removed = driver.execute_script(f"""
+                    const elements = document.querySelectorAll('{selector}');
+                    elements.forEach(el => el.remove());
+                    return elements.length;
+                """)
+                removed_total += removed
+            except:
+                pass
+
+    return removed_total
+
+def remove_cookie_banners(driver):
+    """
+    Remove general cookie banners
+    """
+    cookie_selectors = [
+        '[id*="cookie"]', '[class*="cookie"]',
+        '[id*="consent"]', '[class*="consent"]',
+        '[id*="gdpr"]', '[class*="gdpr"]',
+        '[id*="privacy"]', '[class*="privacy"]',
+        '[class*="banner"]', '[class*="overlay"]',
+        '[class*="modal"]', '[class*="popup"]',
+        '#cookieChoiceInfo', '.cookie-notice',
+        '.gdpr-banner', '.consent-banner',
+        '.cc-banner', '.cookie-bar'
+    ]
+
+    script = """
+    const selectors = arguments[0];
+    let removed = 0;
+    selectors.forEach(selector => {
+        try {
+            document.querySelectorAll(selector).forEach(el => {
+                el.remove();
+                removed++;
+            });
+        } catch(e) {
+            // Ignore selector errors
+        }
+    });
+    return removed;
+    """
+
+    try:
+        removed = driver.execute_script(script, cookie_selectors)
+        return removed
+    except:
+        return 0
+
+def remove_cookie_content_by_text(driver):
+    """
+    Remove elements containing cookie-related text content
+    """
+    script = """
+    const cookieKeywords = [
+        'cookie', 'cookies', 'クッキー',
+        'consent', 'gdpr', 'privacy',
+        'accept', 'agree', 'decline',
+        'このウェブサイトはcookieを使用',
+        'cookieを使用します',
+        'より良いサービス・閲覧体験',
+        'cookieについて',
+        'cookie policy',
+        'privacy policy'
+    ];
+
+    let removed = 0;
+    const elements = Array.from(document.querySelectorAll('*'));
+
+    elements.forEach(el => {
+        try {
+            const text = el.textContent.toLowerCase();
+            const hasId = el.id && cookieKeywords.some(keyword =>
+                el.id.toLowerCase().includes(keyword.toLowerCase())
+            );
+            const hasClass = el.className && cookieKeywords.some(keyword =>
+                el.className.toLowerCase().includes(keyword.toLowerCase())
+            );
+            const hasText = cookieKeywords.some(keyword =>
+                text.includes(keyword.toLowerCase())
+            );
+
+            // Cookie関連の要素を特定
+            if (hasId || hasClass || hasText) {
+                const style = window.getComputedStyle(el);
+
+                // 削除条件：
+                // 1. 非表示でない
+                // 2. テキストを含む
+                // 3. html/body/head以外
+                if (
+                    style.display !== 'none' &&
+                    style.visibility !== 'hidden' &&
+                    text.trim().length > 0 &&
+                    !['HTML', 'BODY', 'HEAD'].includes(el.tagName) &&
+                    (
+                        // 強いCookie指標
+                        hasId || hasClass ||
+                        // または複数のCookieキーワードを含む
+                        cookieKeywords.filter(keyword => text.includes(keyword.toLowerCase())).length >= 2 ||
+                        // または特定の長いCookieフレーズを含む
+                        text.includes('このウェブサイトはcookieを使用') ||
+                        text.includes('より良いサービス・閲覧体験') ||
+                        text.includes('cookie policy') ||
+                        text.includes('privacy policy')
+                    )
+                ) {
+                    // 親要素も含めて削除を検討
+                    let targetElement = el;
+
+                    // もし親要素もCookie関連なら親を削除
+                    if (el.parentElement) {
+                        const parentText = el.parentElement.textContent.toLowerCase();
+                        const parentHasCookie = cookieKeywords.some(keyword =>
+                            parentText.includes(keyword.toLowerCase())
+                        );
+                        const parentHasClass = el.parentElement.className &&
+                            cookieKeywords.some(keyword =>
+                                el.parentElement.className.toLowerCase().includes(keyword.toLowerCase())
+                            );
+
+                        if (parentHasCookie || parentHasClass) {
+                            targetElement = el.parentElement;
+                        }
+                    }
+
+                    targetElement.remove();
+                    removed++;
+                }
+            }
+        } catch(e) {
+            // Ignore errors
+        }
+    });
+
+    return removed;
+    """
+
+    try:
+        return driver.execute_script(script)
+    except:
+        return 0
+
+def remove_high_zindex_overlays(driver):
+    """
+    Remove high z-index overlays that are likely cookie banners
+    """
+    script = """
+    const elements = Array.from(document.querySelectorAll('*'));
+    let removed = 0;
+
+    elements.forEach(el => {
+        try {
+            const style = window.getComputedStyle(el);
+            const zIndex = parseInt(style.zIndex);
+            const position = style.position;
+            const display = style.display;
+
+            if (
+                (position === 'fixed' || position === 'absolute') &&
+                (zIndex > 100 || zIndex === 999999 || zIndex === 9999) &&
+                display !== 'none' &&
+                el.offsetWidth > 100 && el.offsetHeight > 50
+            ) {
+                const text = el.textContent.toLowerCase();
+                const cookieKeywords = ['cookie', 'consent', 'gdpr', 'privacy', 'accept', 'agree'];
+
+                if (cookieKeywords.some(keyword => text.includes(keyword))) {
+                    el.remove();
+                    removed++;
+                }
+            }
+        } catch(e) {
+            // Ignore errors
+        }
+    });
+
+    return removed;
+    """
+
+    try:
+        return driver.execute_script(script)
+    except:
+        return 0
+
+def comprehensive_banner_removal(driver):
+    """
+    Comprehensive cookie banner removal
+    """
+    if DEBUG:
+        print("  Cookieバナー除去を実行中...")
+
+    # 1. Remove known services
+    removed1 = remove_known_cookie_services(driver)
+
+    # 2. Remove general selectors
+    removed2 = remove_cookie_banners(driver)
+
+    # 3. Remove high z-index elements
+    removed3 = remove_high_zindex_overlays(driver)
+
+    # 4. Remove cookie content by text (新しい汎用的手法)
+    removed4 = remove_cookie_content_by_text(driver)
+
+    # 5. Remove suspicious body children
+    try:
+        removed5 = driver.execute_script("""
+            let removed = 0;
+            try {
+                Array.from(document.body.children).forEach(el => {
+                    const style = window.getComputedStyle(el);
+                    const text = el.textContent.toLowerCase();
+
+                    if (
+                        (style.position === 'fixed' || style.position === 'absolute') &&
+                        (text.includes('cookie') || text.includes('consent') ||
+                         text.includes('accept') || text.includes('gdpr')) &&
+                        el.offsetHeight > 30
+                    ) {
+                        el.remove();
+                        removed++;
+                    }
+                });
+            } catch(e) {
+                // Ignore errors
+            }
+            return removed;
+        """)
+    except:
+        removed5 = 0
+
+    total_removed = removed1 + removed2 + removed3 + removed4 + removed5
+
+    if DEBUG and total_removed > 0:
+        print(f"  Cookieバナー {total_removed}個を除去しました")
+        time.sleep(1)  # Wait after removal
+
+    return total_removed
+
 def capture_element_screenshot(driver, element):
     """
     Capture screenshot of a specific element
@@ -283,10 +646,13 @@ def capture_element_screenshot(driver, element):
         # Scroll element into view
         driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", element)
         time.sleep(1)
-        
+
+        # Remove cookie banners before taking screenshot
+        comprehensive_banner_removal(driver)
+
         # Get element screenshot as PNG bytes
         element_png = element.screenshot_as_png
-        
+
         # Convert to PIL Image
         image = Image.open(BytesIO(element_png))
         return image
@@ -664,7 +1030,10 @@ def main():
             improved_elements = len([e for e in results['non_compliant_list'] if e.get('improved_contrast_ratio') and e['improved_contrast_ratio'] != e['contrast_ratio']])
             if improved_elements > 0:
                 print(f"改善されたコントラスト比を持つ要素: {improved_elements}個")
-        
+
+        # Export results to CSV
+        csv_filename = export_to_csv(results, url)
+
     except Exception as e:
         print(f"エラー: {e}")
         sys.exit(1)
