@@ -29,6 +29,8 @@ WCAG Contrast Checker is a tool that evaluates web pages for compliance with WCA
 
    **Configuration Options:**
    - `PAGE_LOAD_WAIT_TIME`: Adjust this value if pages with heavy animations or dynamic content are not fully loaded. Increase for slower pages, decrease for faster analysis.
+   - `SAVE_SCREENSHOTS`: Set to `True` to save individual screenshots of each text element (default: `False`). Screenshots are saved as `0000.png`, `0001.png`, etc., corresponding to element numbers in the CSV.
+   - `SCREENSHOT_DIR`: Directory path to save screenshots (default: `"./images"`)
 
 ## Usage
 Run the tool by providing a URL to check:
@@ -110,6 +112,11 @@ The tool provides detailed console output including:
 - Processing time depends on the number of text elements on the page
 - Ensure ChromeDriver version matches your Chrome browser version
 
+## Bug Fixes & Known Issues
+
+### Fixed in Latest Version
+- **CSS Protection in Cookie Banner Removal**: Fixed an issue where the `remove_cookie_content_by_text()` function was inadvertently deleting the entire `<head>` tag (including all CSS `<link>` and `<style>` tags) when removing cookie banners. This caused screenshots to display incorrect styles (default browser styles instead of actual page styles). The function now properly excludes `LINK` and `STYLE` tags from removal and prevents parent element checking from deleting the `<head>` tag
+
 ## License
 This project is licensed under the MIT License - see the LICENSE file for details.
 
@@ -146,6 +153,8 @@ WCAG コントラスト比チェッカーは、ウェブページがWCAG 1.4.3�
 
    **設定オプション:**
    - `PAGE_LOAD_WAIT_TIME`: アニメーションや動的コンテンツが多いページが完全に読み込まれない場合は、この値を調整してください。遅いページでは増やし、高速な分析のためには減らしてください。
+   - `SAVE_SCREENSHOTS`: 各テキスト要素のスクリーンショットを保存する場合は`True`に設定（デフォルト: `False`）。スクリーンショットはCSVの要素番号に対応して`0000.png`、`0001.png`などとして保存されます。
+   - `SCREENSHOT_DIR`: スクリーンショットの保存先ディレクトリパス（デフォルト: `"./images"`）
 
 ## 使い方
 チェックするURLを指定してツールを実行します：
@@ -226,6 +235,11 @@ python wcag_contrast_checker.py https://example.com
 - 外部APIは不要で、純粋な数学計算でコントラスト比を算出します
 - 処理時間はページ上のテキスト要素数に依存します
 - ChromeDriverのバージョンがお使いのChromeブラウザのバージョンと一致していることを確認してください
+
+## バグフィックスと既知の問題
+
+### 最新バージョンで修正済み
+- **クッキーバナー削除時のCSS保護**: `remove_cookie_content_by_text()`関数がクッキーバナーを削除する際に、`<head>`タグ全体（すべてのCSS `<link>`および`<style>`タグを含む）を誤って削除していた問題を修正しました。この問題により、スクリーンショットが実際のページスタイルではなくデフォルトのブラウザスタイルで表示されていました。この関数は現在、`LINK`および`STYLE`タグを削除対象から適切に除外し、親要素チェックによって`<head>`タグが削除されないようになっています
 
 ## ライセンス
 このプロジェクトはMITライセンスの下でライセンスされています。詳細はLICENSEファイルを参照してください。

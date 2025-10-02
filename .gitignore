@@ -15,3 +15,7 @@ venv/
 .DS_Store
 
 doc/
+
+# 生成ファイル
+images/
+*.csv

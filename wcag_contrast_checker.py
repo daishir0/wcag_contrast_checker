@@ -47,7 +47,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from sklearn.cluster import KMeans
-from config import CHROME_BINARY_PATH, CHROME_DRIVER_PATH, DEBUG, PAGE_LOAD_WAIT_TIME
+from config import CHROME_BINARY_PATH, CHROME_DRIVER_PATH, DEBUG, PAGE_LOAD_WAIT_TIME, SAVE_SCREENSHOTS, SCREENSHOT_DIR
 
 def setup_driver():
     """
@@ -528,12 +528,12 @@ def remove_cookie_content_by_text(driver):
                 // 削除条件：
                 // 1. 非表示でない
                 // 2. テキストを含む
-                // 3. html/body/head以外
+                // 3. html/body/head/link/style以外（CSSを保護）
                 if (
                     style.display !== 'none' &&
                     style.visibility !== 'hidden' &&
                     text.trim().length > 0 &&
-                    !['HTML', 'BODY', 'HEAD'].includes(el.tagName) &&
+                    !['HTML', 'BODY', 'HEAD', 'LINK', 'STYLE'].includes(el.tagName) &&
                     (
                         // 強いCookie指標
                         hasId || hasClass ||
@@ -550,7 +550,8 @@ def remove_cookie_content_by_text(driver):
                     let targetElement = el;
 
                     // もし親要素もCookie関連なら親を削除
-                    if (el.parentElement) {
+                    // ただしHEADタグは除外してCSSを保護
+                    if (el.parentElement && !['HEAD'].includes(el.parentElement.tagName)) {
                         const parentText = el.parentElement.textContent.toLowerCase();
                         const parentHasCookie = cookieKeywords.some(keyword =>
                             parentText.includes(keyword.toLowerCase())
@@ -906,7 +907,8 @@ def check_contrast_ratio(url):
             true_bg_luminance = None
             true_bg_rgb = None
             improved_contrast_ratio = None
-            
+            element_image = None
+
             try:
                 # Find the element using XPath
                 dom_element = driver.find_element(By.XPATH, element['xpath'])
@@ -934,7 +936,32 @@ def check_contrast_ratio(url):
             except Exception as e:
                 if DEBUG:
                     print(f"  要素の詳細解析をスキップ: {e}")
-            
+
+            # スクリーンショット保存（オプション）
+            if SAVE_SCREENSHOTS:
+                try:
+                    # 保存ディレクトリが存在しない場合は作成（初回のみ）
+                    if i == 0:
+                        os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+
+                    # element_imageが既に取得されている場合はそれを保存
+                    if element_image is not None:
+                        filename = os.path.join(SCREENSHOT_DIR, f"{i:04d}.png")
+                        element_image.save(filename)
+                    else:
+                        # element_imageが取得されていない場合は、capture_element_screenshotを呼び出す
+                        if 'dom_element' not in locals() or dom_element is None:
+                            dom_element = driver.find_element(By.XPATH, element['xpath'])
+
+                        screenshot_image = capture_element_screenshot(driver, dom_element)
+                        if screenshot_image is not None:
+                            filename = os.path.join(SCREENSHOT_DIR, f"{i:04d}.png")
+                            screenshot_image.save(filename)
+
+                except Exception as e:
+                    if DEBUG:
+                        print(f"  警告: 要素 {i} のスクリーンショット取得に失敗: {e}")
+
             # Use improved contrast ratio if available, otherwise use original
             final_contrast_ratio = improved_contrast_ratio if improved_contrast_ratio is not None else contrast_ratio
             
