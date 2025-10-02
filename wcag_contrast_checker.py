@@ -47,7 +47,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from sklearn.cluster import KMeans
-from config import CHROME_BINARY_PATH, CHROME_DRIVER_PATH, DEBUG
+from config import CHROME_BINARY_PATH, CHROME_DRIVER_PATH, DEBUG, PAGE_LOAD_WAIT_TIME
 
 def setup_driver():
     """
@@ -202,6 +202,46 @@ def get_text_elements(driver):
     if DEBUG:
         print("テキスト要素検出前にCookieバナーを除去中...")
     comprehensive_banner_removal(driver)
+
+    # ページの完全な読み込みを待つ
+    if DEBUG:
+        print(f"ページの読み込み完了を待機中... ({PAGE_LOAD_WAIT_TIME}秒)")
+    time.sleep(PAGE_LOAD_WAIT_TIME)
+
+    # JavaScriptの実行が完了するまで待つ
+    driver.execute_script("return document.readyState") == "complete"
+
+    # ネットワーク活動の完了を確認
+    try:
+        driver.set_script_timeout(30)
+        wait_script = """
+        const callback = arguments[arguments.length - 1];
+        if (typeof performance !== 'undefined') {
+            // 200ms間新しいリソース読み込みがなければ完了とみなす
+            let lastCount = performance.getEntriesByType('resource').length;
+            const checkInterval = setInterval(() => {
+                const currentCount = performance.getEntriesByType('resource').length;
+                if (currentCount === lastCount) {
+                    clearInterval(checkInterval);
+                    callback(true);
+                }
+                lastCount = currentCount;
+            }, 200);
+            // タイムアウト処理（5秒）
+            setTimeout(() => {
+                clearInterval(checkInterval);
+                callback(true);
+            }, 5000);
+        } else {
+            callback(true);
+        }
+        """
+        driver.execute_async_script(wait_script)
+        if DEBUG:
+            print("ネットワーク活動の完了を確認しました")
+    except Exception as e:
+        if DEBUG:
+            print(f"ネットワーク活動の確認でエラー: {e}")
 
     # JavaScript to extract text elements with their computed styles
     script = """

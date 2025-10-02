@@ -4,3 +4,7 @@ CHROME_DRIVER_PATH = "/usr/bin/chromedriver"
 
 # デバッグ設定
 DEBUG = False
+
+# ページ読み込み待機時間（秒）
+# アニメーションやJavaScriptの実行完了を待つための時間
+PAGE_LOAD_WAIT_TIME = 5

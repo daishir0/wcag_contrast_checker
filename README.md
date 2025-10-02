@@ -24,7 +24,11 @@ WCAG Contrast Checker is a tool that evaluates web pages for compliance with WCA
    CHROME_BINARY_PATH = "/path/to/chrome"  # e.g., "/usr/bin/google-chrome"
    CHROME_DRIVER_PATH = "/path/to/chromedriver"  # e.g., "/usr/local/bin/chromedriver"
    DEBUG = False  # Set to True for verbose output
+   PAGE_LOAD_WAIT_TIME = 5  # Wait time in seconds for page to fully load (animations, JavaScript, etc.)
    ```
+
+   **Configuration Options:**
+   - `PAGE_LOAD_WAIT_TIME`: Adjust this value if pages with heavy animations or dynamic content are not fully loaded. Increase for slower pages, decrease for faster analysis.
 
 ## Usage
 Run the tool by providing a URL to check:
@@ -137,7 +141,11 @@ WCAG コントラスト比チェッカーは、ウェブページがWCAG 1.4.3�
    CHROME_BINARY_PATH = "/Chromeへのパス"  # 例："/usr/bin/google-chrome"
    CHROME_DRIVER_PATH = "/ChromeDriverへのパス"  # 例："/usr/local/bin/chromedriver"
    DEBUG = False  # 詳細な出力が必要な場合はTrueに設定
+   PAGE_LOAD_WAIT_TIME = 5  # ページの完全な読み込み待機時間（秒）アニメーション、JavaScriptなど
    ```
+
+   **設定オプション:**
+   - `PAGE_LOAD_WAIT_TIME`: アニメーションや動的コンテンツが多いページが完全に読み込まれない場合は、この値を調整してください。遅いページでは増やし、高速な分析のためには減らしてください。
 
 ## 使い方
 チェックするURLを指定してツールを実行します：
