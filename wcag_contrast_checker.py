@@ -56,7 +56,7 @@ def setup_driver():
     options = Options()
     # サーバー環境では必ずヘッドレスモードで実行
     options.binary_location = CHROME_BINARY_PATH
-    options.add_argument("--window-size=1366,768")
+    options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument('--disable-dev-shm-usage')
