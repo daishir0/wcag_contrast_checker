@@ -47,6 +47,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from sklearn.cluster import KMeans
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from config import CHROME_BINARY_PATH, CHROME_DRIVER_PATH, DEBUG, PAGE_LOAD_WAIT_TIME, SAVE_SCREENSHOTS, SCREENSHOT_DIR
 
 def setup_driver():
@@ -684,12 +685,12 @@ def capture_element_screenshot(driver, element):
     Capture screenshot of a specific element
     """
     try:
-        # Scroll element into view
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", element)
-        time.sleep(1)
+        # Scroll element into view (instant scroll, no animation)
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'instant'});", element)
+        # No sleep needed with instant scroll
 
-        # Remove cookie banners before taking screenshot
-        comprehensive_banner_removal(driver)
+        # Cookie banner removal moved to loop initialization
+        # comprehensive_banner_removal(driver)
 
         # Get element screenshot as PNG bytes
         element_png = element.screenshot_as_png
@@ -788,6 +789,65 @@ def calculate_true_background_luminance(image, text_color_rgb):
         if DEBUG:
             print(f"真背景色計算エラー (Dominant Clustering): {e}")
         return None, None
+
+def analyze_image_batch(images_data):
+    """
+    Analyze a batch of images in parallel using ProcessPoolExecutor
+
+    Args:
+        images_data: List of tuples (image, text_rgb, index)
+
+    Returns:
+        List of tuples (index, true_bg_luminance, true_bg_rgb)
+    """
+    results = []
+
+    with ProcessPoolExecutor() as executor:
+        # Submit all tasks
+        futures = {}
+        for image, text_rgb, index in images_data:
+            if image is not None:
+                future = executor.submit(calculate_true_background_luminance, image, text_rgb)
+                futures[future] = index
+            else:
+                results.append((index, None, None))
+
+        # Collect results
+        for future in futures:
+            index = futures[future]
+            try:
+                true_bg_luminance, true_bg_rgb = future.result()
+                results.append((index, true_bg_luminance, true_bg_rgb))
+            except Exception as e:
+                if DEBUG:
+                    print(f"  並列画像解析エラー (index {index}): {e}")
+                results.append((index, None, None))
+
+    # Sort by index to maintain order
+    results.sort(key=lambda x: x[0])
+    return results
+
+def save_images_batch(images_data):
+    """
+    Save images in parallel using ThreadPoolExecutor
+
+    Args:
+        images_data: List of tuples (image, filename)
+    """
+    with ThreadPoolExecutor() as executor:
+        futures = []
+        for image, filename in images_data:
+            if image is not None:
+                future = executor.submit(image.save, filename)
+                futures.append(future)
+
+        # Wait for all saves to complete
+        for future in futures:
+            try:
+                future.result()
+            except Exception as e:
+                if DEBUG:
+                    print(f"  並列画像保存エラー: {e}")
 
 def calculate_contrast_ratio(foreground_color, background_color):
     """
@@ -891,83 +951,130 @@ def check_contrast_ratio(url):
         )
         
         print("ページの読み込みが完了しました")
-        
+
         # Get all text elements
         text_elements = get_text_elements(driver)
-        
-        # Process each element
-        results = []
+
+        # Remove cookie banners once before processing elements (Optimization)
+        print("Cookieバナーを除去中...")
+        comprehensive_banner_removal(driver)
+        print("Cookieバナーの除去が完了しました")
+
+        # ========================================
+        # Phase 1: スクリーンショット取得（順次処理）
+        # ========================================
+        print("\n=== Phase 1: スクリーンショット取得中 ===")
+        elements_data = []
+
+        # 保存ディレクトリ作成
+        if SAVE_SCREENSHOTS:
+            os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+
         for i, element in enumerate(text_elements):
-            print(f"要素を処理中 {i+1}/{len(text_elements)}: {element['text'][:50]}...")
-            
-            # Calculate original contrast ratio
-            contrast_ratio = calculate_contrast_ratio(element['color'], element['backgroundColor'])
-            
-            # Try to get the actual DOM element for screenshot analysis
-            true_bg_luminance = None
-            true_bg_rgb = None
-            improved_contrast_ratio = None
+            print(f"要素 {i+1}/{len(text_elements)}: スクリーンショット取得中...")
+
             element_image = None
+            text_rgb = None
 
             try:
                 # Find the element using XPath
                 dom_element = driver.find_element(By.XPATH, element['xpath'])
-                
+
                 # Capture element screenshot
                 element_image = capture_element_screenshot(driver, dom_element)
-                
+
+                # Parse text color
                 if element_image:
-                    # Parse text color
                     rgb_match = re.match(r'rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*[\d.]+)?\)', element['color'])
                     if rgb_match:
                         text_rgb = (int(rgb_match.group(1)), int(rgb_match.group(2)), int(rgb_match.group(3)))
-                        
-                        # Calculate true background luminance
-                        true_bg_luminance, true_bg_rgb = calculate_true_background_luminance(element_image, text_rgb)
-                        
-                        if true_bg_luminance is not None:
-                            # Calculate improved contrast ratio
-                            improved_contrast_ratio = calculate_improved_contrast_ratio(element['color'], true_bg_luminance)
-                            
-                            if DEBUG:
-                                print(f"  真背景色: rgb{true_bg_rgb}, 輝度: {true_bg_luminance:.4f}")
-                                print(f"  改善されたコントラスト比: {improved_contrast_ratio:.2f}:1")
-                    
+
             except Exception as e:
                 if DEBUG:
-                    print(f"  要素の詳細解析をスキップ: {e}")
+                    print(f"  警告: 要素 {i} のスクリーンショット取得失敗: {e}")
 
-            # スクリーンショット保存（オプション）
-            if SAVE_SCREENSHOTS:
-                try:
-                    # 保存ディレクトリが存在しない場合は作成（初回のみ）
-                    if i == 0:
-                        os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+            # Store data for parallel processing
+            elements_data.append({
+                'index': i,
+                'element': element,
+                'image': element_image,
+                'text_rgb': text_rgb
+            })
 
-                    # element_imageが既に取得されている場合はそれを保存
-                    if element_image is not None:
-                        filename = os.path.join(SCREENSHOT_DIR, f"{i:04d}.png")
-                        element_image.save(filename)
-                    else:
-                        # element_imageが取得されていない場合は、capture_element_screenshotを呼び出す
-                        if 'dom_element' not in locals() or dom_element is None:
-                            dom_element = driver.find_element(By.XPATH, element['xpath'])
+        print(f"Phase 1 完了: {len(elements_data)}個の要素のスクリーンショット取得完了\n")
 
-                        screenshot_image = capture_element_screenshot(driver, dom_element)
-                        if screenshot_image is not None:
-                            filename = os.path.join(SCREENSHOT_DIR, f"{i:04d}.png")
-                            screenshot_image.save(filename)
+        # ========================================
+        # Phase 2: 画像解析（並列処理）
+        # ========================================
+        print("=== Phase 2: 画像解析中（並列処理） ===")
 
-                except Exception as e:
-                    if DEBUG:
-                        print(f"  警告: 要素 {i} のスクリーンショット取得に失敗: {e}")
+        # Prepare data for parallel analysis
+        images_for_analysis = [
+            (data['image'], data['text_rgb'], data['index'])
+            for data in elements_data
+            if data['image'] is not None and data['text_rgb'] is not None
+        ]
+
+        # Parallel image analysis
+        if images_for_analysis:
+            print(f"{len(images_for_analysis)}個の画像を並列解析中...")
+            analysis_results = analyze_image_batch(images_for_analysis)
+
+            # Create a mapping from index to results
+            analysis_map = {index: (luminance, rgb) for index, luminance, rgb in analysis_results}
+        else:
+            analysis_map = {}
+
+        print(f"Phase 2 完了: {len(analysis_results if images_for_analysis else [])}個の画像解析完了\n")
+
+        # ========================================
+        # Phase 3: 画像保存（並列処理）
+        # ========================================
+        if SAVE_SCREENSHOTS:
+            print("=== Phase 3: 画像保存中（並列処理） ===")
+
+            images_to_save = [
+                (data['image'], os.path.join(SCREENSHOT_DIR, f"{data['index']:04d}.png"))
+                for data in elements_data
+                if data['image'] is not None
+            ]
+
+            if images_to_save:
+                print(f"{len(images_to_save)}個の画像を並列保存中...")
+                save_images_batch(images_to_save)
+
+            print(f"Phase 3 完了: {len(images_to_save)}個の画像保存完了\n")
+
+        # ========================================
+        # Phase 4: 結果集約
+        # ========================================
+        print("=== Phase 4: 結果集約中 ===")
+        results = []
+
+        for data in elements_data:
+            i = data['index']
+            element = data['element']
+
+            # Calculate original contrast ratio
+            contrast_ratio = calculate_contrast_ratio(element['color'], element['backgroundColor'])
+
+            # Get analysis results
+            true_bg_luminance, true_bg_rgb = analysis_map.get(i, (None, None))
+
+            # Calculate improved contrast ratio
+            improved_contrast_ratio = None
+            if true_bg_luminance is not None:
+                improved_contrast_ratio = calculate_improved_contrast_ratio(element['color'], true_bg_luminance)
+
+                if DEBUG:
+                    print(f"要素 {i}: 真背景色 rgb{true_bg_rgb}, 輝度: {true_bg_luminance:.4f}, コントラスト比: {improved_contrast_ratio:.2f}:1")
 
             # Use improved contrast ratio if available, otherwise use original
             final_contrast_ratio = improved_contrast_ratio if improved_contrast_ratio is not None else contrast_ratio
-            
+
             # Determine WCAG compliance using final contrast ratio
             compliance = determine_wcag_compliance(element, final_contrast_ratio)
-            
+
             # Create result object
             result = {
                 'index': i,
@@ -989,8 +1096,10 @@ def check_contrast_ratio(url):
                 'final_contrast_ratio': round(final_contrast_ratio, 2),
                 'compliance': compliance
             }
-            
+
             results.append(result)
+
+        print(f"Phase 4 完了: {len(results)}個の結果集約完了\n")
         
         # Create final report (use final_contrast_ratio for compliance determination)
         compliant_elements = [r for r in results if r['compliance']['is_compliant']]
